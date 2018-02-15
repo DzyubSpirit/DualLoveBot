@@ -175,7 +175,7 @@ func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		case dual:
 			msg, entities = InsertMentions([]string{"", " влюблен(а) 😍😍😍😍😍😍😍 в ", ""}, pair.From.Mention, pair.To.Mention)
 		case activator:
-			msg, entities = InsertMentions([]string{"", " влюблен(а) 😍😍😍😍 в ", " но боиться признаться в этом 🙈", ""}, pair.From.Mention, pair.To.Mention)
+			msg, entities = InsertMentions([]string{"", " влюблен(а) 😍😍😍😍 в ", ", но боиться признаться в этом 🙈"}, pair.From.Mention, pair.To.Mention)
 		case halfDual:
 			msg, entities = InsertMentions([]string{"", " немного влюблен(а) 😍😍😍 в ", ""}, pair.From.Mention, pair.To.Mention)
 		}
