@@ -108,8 +108,8 @@ func addUser(db *bolt.DB, update tgbotapi.Update) (string, error) {
 
 	var mention *Mention
 	for _, ent := range *update.Message.Entities {
-		if ent.Type == "mention" {
-			text := update.Message.Text[ent.Offset:ent.Offset+ent.Length]
+		if ent.Type == "mention" || ent.Type == "text_mention" {
+			text := string([]rune(update.Message.Text)[ent.Offset:ent.Offset+ent.Length])
 			mention = new(Mention)
 			*mention = NewMention(text, ent)
 			break
