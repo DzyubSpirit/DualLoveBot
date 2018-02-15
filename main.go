@@ -1,12 +1,16 @@
 package main
 
 import (
-	"log"
-	tgbotapi "gopkg.in/telegram-bot-api.v4"
-	"strings"
-	"fmt"
-	"math/rand"
+	"bytes"
+	"encoding/gob"
 	"flag"
+	"fmt"
+	"log"
+	"math/rand"
+	"strings"
+
+	"github.com/boltdb/bolt"
+	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
 
 const botName = "@duallovebot"
@@ -44,12 +48,12 @@ var botKeyVar string
 
 type User struct {
 	Nickname string
-	Type string
+	Type     string
 }
 
 var users = map[string]User{}
 
-func addUser(bot *tgbotapi.BotAPI, update tgbotapi.Update) string {
+func addUser(db *bolt.DB, update tgbotapi.Update) (string, error) {
 	msg := update.Message.Text
 	lMsg := strings.ToLower(msg)
 
@@ -61,7 +65,7 @@ func addUser(bot *tgbotapi.BotAPI, update tgbotapi.Update) string {
 		}
 	}
 	if typ == "" {
-		return "Укажите социотип, плез"
+		return "Укажите социотип, плез", nil
 	}
 
 	var nick string
@@ -73,18 +77,37 @@ func addUser(bot *tgbotapi.BotAPI, update tgbotapi.Update) string {
 		}
 	}
 	if nick == "" {
-		return "Упомяни человека в команде боту"
+		return "Упомяни человека в команде боту", nil
 	}
 
-	users[nick] = User{nick,typ}
-	return fmt.Sprintf("%s - %s", nick, typ)
+	users[nick] = User{nick, typ}
+	err := db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("users"))
+		var buffer bytes.Buffer
+		err := gob.NewEncoder(&buffer).Encode(users[nick])
+		if err != nil {
+			return fmt.Errorf("error encoding user: %v", err)
+		}
+
+		return b.Put([]byte(nick), buffer.Bytes())
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%s - %s", nick, typ), nil
 }
 
-func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update) {
+func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 	switch update.Message.Command() {
 	case "add":
 		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
-		msg := addUser(bot, update)
+		msg, err := addUser(db, update)
+		if err != nil {
+			log.Printf("ERROR: command \"add\": %v", err)
+			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "Поздравяю! Ты сломал бота! Ну кто тебя просил то... Напиши ॅॅ@Vladka_Marmelaka об этом"))
+			return
+		}
 		bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, msg))
 	case "joke":
 		type Pair struct {
@@ -137,21 +160,49 @@ func main() {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
-	updates, err := bot.GetUpdatesChan(u)
+	db, err := bolt.Open("my.db", 0600, nil)
+	if err != nil {
+		log.Fatalf("error openning database my.db: %v", err)
+	}
 
+	err = db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists([]byte("users"))
+		if err != nil {
+			return fmt.Errorf("error creating bucket: %v", err)
+		}
+
+		c := b.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			key := string(k)
+			var val User
+
+			err = gob.NewDecoder(bytes.NewBuffer(v)).Decode(&val)
+			if err != nil {
+				return fmt.Errorf("error decoding val %s, err: %v", v, err)
+			}
+
+			users[key] = val
+		}
+		return nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	updates, err := bot.GetUpdatesChan(u)
 	for update := range updates {
 		if update.Message == nil || !update.Message.IsCommand() {
 			continue
 		}
 
-		handleCommand(bot, update)
+		handleCommand(db, bot, update)
 		/*
-		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
+			log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
 
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, update.Message.Text)
-		msg.ReplyToMessageID = update.Message.MessageID
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, update.Message.Text)
+			msg.ReplyToMessageID = update.Message.MessageID
 
-		bot.Send(msg)
+			bot.Send(msg)
 		*/
 	}
 }
