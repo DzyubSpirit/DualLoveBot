@@ -10,14 +10,15 @@ import (
 	"strings"
 
 	"github.com/boltdb/bolt"
-	tgbotapi "gopkg.in/telegram-bot-api.v4"
+	"github.com/dzyubspirit/telegram-bot-api"
 )
 
 const botName = "@duallovebot"
 
 const (
-	dual     = 1
-	halfDual = 2
+	dual      = 1
+	activator = 2
+	halfDual  = 3
 )
 
 var (
@@ -25,30 +26,67 @@ var (
 		"Бальзак", "Джек", "Драйзер", "Штирлиц", "Достоевский", "Гексли", "Габен",
 	}
 	complience = map[string]map[string]int{
-		"Дон Кихот":   {"Дюма": dual, "Габен": halfDual},
-		"Дюма":        {"Дон Кихот": dual, "Гексли": halfDual},
-		"Гюго":        {"Робеспьер": dual, "Максим": halfDual},
-		"Робеспьер":   {"Гюго": dual, "Гамлет": halfDual},
-		"Гамлет":      {"Максим": dual, "Робеспьер": halfDual},
-		"Максим":      {"Гамлет": dual, "Гюго": halfDual},
-		"Жуков":       {"Есенин": dual, "Бальзак": halfDual},
-		"Есенин":      {"Жуков": dual, "Наполеон": halfDual},
-		"Наполеон":    {"Бальзак": dual, "Есенин": halfDual},
-		"Бальзак":     {"Наполеон": dual, "Жуков": halfDual},
-		"Джек":        {"Драйзер": dual, "Достоевский": halfDual},
-		"Драйзер":     {"Джек": dual, "Штирлиц": halfDual},
-		"Штирлиц":     {"Достоевский": dual, "Драйзер": halfDual},
-		"Достоевский": {"Штирлиц": dual, "Джек": halfDual},
-		"Гексли":      {"Габен": dual, "Дюма": halfDual},
-		"Габен":       {"Гексли": dual, "Дон Кихот": halfDual},
+		"Дон Кихот":   {"Дюма": dual, "Гюго": activator, "Габен": halfDual},
+		"Дюма":        {"Дон Кихот": dual, "Робеспьер": activator, "Гексли": halfDual},
+		"Гюго":        {"Робеспьер": dual, "Дон Кихот": activator, "Максим": halfDual},
+		"Робеспьер":   {"Гюго": dual, "Дюма": activator, "Гамлет": halfDual},
+		"Гамлет":      {"Максим": dual, "Жуков": activator, "Робеспьер": halfDual},
+		"Максим":      {"Гамлет": dual, "Есенин": activator, "Гюго": halfDual},
+		"Жуков":       {"Есенин": dual, "Гамлет": activator, "Бальзак": halfDual},
+		"Есенин":      {"Жуков": dual, "Максим": activator, "Наполеон": halfDual},
+		"Наполеон":    {"Бальзак": dual, "Джек": activator, "Есенин": halfDual},
+		"Бальзак":     {"Наполеон": dual, "Драйзер": activator, "Жуков": halfDual},
+		"Джек":        {"Драйзер": dual, "Наполеон": activator, "Достоевский": halfDual},
+		"Драйзер":     {"Джек": dual, "Бальзак": activator, "Штирлиц": halfDual},
+		"Штирлиц":     {"Достоевский": dual, "Гексли": activator, "Драйзер": halfDual},
+		"Достоевский": {"Штирлиц": dual, "Габен": activator, "Джек": halfDual},
+		"Гексли":      {"Габен": dual, "Штирлиц": activator, "Дюма": halfDual},
+		"Габен":       {"Гексли": dual, "Достоевский": activator, "Дон Кихот": halfDual},
 	}
 )
 
 var botKeyVar string
 
+type Mention struct {
+	Text string
+	Type string         `json:"type"`
+	URL  string         `json:"url"`  // optional
+	User *tgbotapi.User `json:"user"` // optional
+}
+
+func InsertMentions(strs []string, mentions ...Mention) (string, []tgbotapi.MessageEntity) {
+	if len(strs) != len(mentions)+1 {
+		panic("len(strs) should be equal len(metions) + 1")
+	}
+	entities := make([]tgbotapi.MessageEntity, len(mentions))
+	var buf bytes.Buffer
+	for i, mention := range mentions {
+		entities[i] = tgbotapi.MessageEntity{
+			Type:   mention.Type,
+			URL:    mention.URL,
+			Offset: buf.Len(),
+			Length: len(mention.Text),
+			User:   mention.User,
+		}
+		buf.WriteString(strs[i])
+		buf.WriteString(mention.Text)
+	}
+	buf.WriteString(strs[len(strs)-1])
+	return buf.String(), entities
+}
+
+func NewMention(text string, mention tgbotapi.MessageEntity) Mention {
+	return Mention{
+		Text: text,
+		URL:  mention.URL,
+		Type: mention.Type,
+		User: mention.User,
+	}
+}
+
 type User struct {
-	Nickname string
-	Type     string
+	Mention Mention
+	Type    string
 }
 
 var users = map[string]User{}
@@ -68,34 +106,35 @@ func addUser(db *bolt.DB, update tgbotapi.Update) (string, error) {
 		return "Укажите социотип, плез", nil
 	}
 
-	var nick string
-	parts := strings.Split(msg, " ")
-	for _, p := range parts {
-		if p[0] == '@' && strings.ToLower(p) != botName {
-			nick = strings.ToLower(p)
+	var mention *Mention
+	for _, ent := range *update.Message.Entities {
+		if ent.Type == "mention" {
+			text := update.Message.Text[ent.Offset:ent.Offset+ent.Length]
+			mention = new(Mention)
+			*mention = NewMention(text, ent)
 			break
 		}
 	}
-	if nick == "" {
+	if mention == nil {
 		return "Упомяни человека в команде боту", nil
 	}
 
-	users[nick] = User{nick, typ}
+	users[mention.Text] = User{Mention: *mention, Type: typ}
 	err := db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("users"))
 		var buffer bytes.Buffer
-		err := gob.NewEncoder(&buffer).Encode(users[nick])
+		err := gob.NewEncoder(&buffer).Encode(users[mention.Text])
 		if err != nil {
 			return fmt.Errorf("error encoding user: %v", err)
 		}
 
-		return b.Put([]byte(nick), buffer.Bytes())
+		return b.Put([]byte(mention.Text), buffer.Bytes())
 	})
 	if err != nil {
 		return "", err
 	}
 
-	return fmt.Sprintf("%s - %s", nick, typ), nil
+	return fmt.Sprintf("%s - %s", mention.Text, typ), nil
 }
 
 func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
@@ -131,13 +170,18 @@ func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 
 		pair := pairs[rand.Intn(len(pairs))]
 		var msg string
+		var entities []tgbotapi.MessageEntity
 		switch complience[pair.From.Type][pair.To.Type] {
 		case dual:
-			msg = fmt.Sprintf("%s влюблен(а) 😍😍😍😍😍😍😍 в %s", pair.From.Nickname, pair.To.Nickname)
+			msg, entities = InsertMentions([]string{"", " влюблен(а) 😍😍😍😍😍😍😍 в ", ""}, pair.From.Mention, pair.To.Mention)
+		case activator:
+			msg, entities = InsertMentions([]string{"", " влюблен(а) 😍😍😍😍 в ", " но боиться признаться в этом 🙈", ""}, pair.From.Mention, pair.To.Mention)
 		case halfDual:
-			msg = fmt.Sprintf("%s немного влюблен(а) 😍😍😍 в %s", pair.From.Nickname, pair.To.Nickname)
+			msg, entities = InsertMentions([]string{"", " немного влюблен(а) 😍😍😍 в ", ""}, pair.From.Mention, pair.To.Mention)
 		}
-		bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, msg))
+		mc := tgbotapi.NewMessage(update.Message.Chat.ID, msg)
+		mc.Entities = entities
+		bot.Send(mc)
 	}
 }
 
