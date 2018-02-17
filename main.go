@@ -10,7 +10,8 @@ import (
 	"strings"
 
 	"github.com/boltdb/bolt"
-	"github.com/dzyubspirit/telegram-bot-api"
+	"gopkg.in/telegram-bot-api.v4"
+	"strconv"
 )
 
 const botName = "@duallovebot"
@@ -47,49 +48,36 @@ var (
 
 var botKeyVar string
 
-type Mention struct {
-	Text string
-	Type string         `json:"type"`
-	URL  string         `json:"url"`  // optional
-	User *tgbotapi.User `json:"user"` // optional
-}
-
-func InsertMentions(strs []string, mentions ...Mention) (string, []tgbotapi.MessageEntity) {
-	if len(strs) != len(mentions)+1 {
-		panic("len(strs) should be equal len(metions) + 1")
-	}
-	entities := make([]tgbotapi.MessageEntity, len(mentions))
-	var buf bytes.Buffer
-	for i, mention := range mentions {
-		entities[i] = tgbotapi.MessageEntity{
-			Type:   mention.Type,
-			URL:    mention.URL,
-			Offset: buf.Len(),
-			Length: len(mention.Text),
-			User:   mention.User,
-		}
-		buf.WriteString(strs[i])
-		buf.WriteString(mention.Text)
-	}
-	buf.WriteString(strs[len(strs)-1])
-	return buf.String(), entities
-}
-
-func NewMention(text string, mention tgbotapi.MessageEntity) Mention {
-	return Mention{
-		Text: text,
-		URL:  mention.URL,
-		Type: mention.Type,
-		User: mention.User,
-	}
-}
-
 type User struct {
-	Mention Mention
-	Type    string
+	DisplayName string
+	Type        string
 }
 
-var users = map[string]User{}
+type UserWithID struct {
+	User
+	ID int
+}
+
+type Mentioner interface {
+	Mention() string
+	GetType() string
+}
+
+func (u User) Mention() string {
+	return fmt.Sprintf("[%s]", u.DisplayName)
+}
+
+func (u User) GetType() string {
+	return u.Type
+}
+
+func (u UserWithID) Mention() string {
+	return fmt.Sprintf("[%s](tg://user?id=%v)", u.DisplayName, u.ID)
+}
+
+type UserIDType = int
+
+var users = map[UserIDType]Mentioner{}
 
 func addUser(db *bolt.DB, update tgbotapi.Update) (string, error) {
 	msg := update.Message.Text
@@ -106,35 +94,43 @@ func addUser(db *bolt.DB, update tgbotapi.Update) (string, error) {
 		return "Укажите социотип, плез", nil
 	}
 
-	var mention *Mention
+	var displayName string
+	var userID int
 	for _, ent := range *update.Message.Entities {
 		if ent.Type == "mention" || ent.Type == "text_mention" {
 			text := string([]rune(update.Message.Text)[ent.Offset:ent.Offset+ent.Length])
-			mention = new(Mention)
-			*mention = NewMention(text, ent)
+			displayName = text
+			if ent.User != nil {
+				userID = ent.User.ID
+			}
 			break
 		}
 	}
-	if mention == nil {
+	if displayName == "" {
 		return "Упомяни человека в команде боту", nil
 	}
 
-	users[mention.Text] = User{Mention: *mention, Type: typ}
+	u := User{DisplayName: displayName, Type: typ}
+	if userID != 0 {
+		users[userID] = UserWithID{User: u, ID: userID}
+	} else {
+		users[userID] = u
+	}
 	err := db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("users"))
 		var buffer bytes.Buffer
-		err := gob.NewEncoder(&buffer).Encode(users[mention.Text])
+		err := gob.NewEncoder(&buffer).Encode(users[userID])
 		if err != nil {
 			return fmt.Errorf("error encoding user: %v", err)
 		}
 
-		return b.Put([]byte(mention.Text), buffer.Bytes())
+		return b.Put([]byte(strconv.Itoa(userID)), buffer.Bytes())
 	})
 	if err != nil {
 		return "", err
 	}
 
-	return fmt.Sprintf("%s - %s", mention.Text, typ), nil
+	return fmt.Sprintf("%s - %s", displayName, typ), nil
 }
 
 func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
@@ -150,14 +146,14 @@ func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, msg))
 	case "joke":
 		type Pair struct {
-			From User
-			To   User
+			From Mentioner
+			To   Mentioner
 		}
 
 		pairs := make([]Pair, 0, len(users)*len(users))
 		for _, u1 := range users {
 			for _, u2 := range users {
-				if complience[u1.Type][u2.Type] > 0 {
+				if complience[u1.GetType()][u2.GetType()] > 0 {
 					pairs = append(pairs, Pair{u1, u2})
 				}
 			}
@@ -169,18 +165,21 @@ func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		}
 
 		pair := pairs[rand.Intn(len(pairs))]
+		from := pair.From.Mention()
+		to := pair.To.Mention()
+		log.Printf("from: %q, to: %q", from, to)
 		var msg string
-		var entities []tgbotapi.MessageEntity
-		switch complience[pair.From.Type][pair.To.Type] {
+		switch complience[pair.From.GetType()][pair.To.GetType()] {
 		case dual:
-			msg, entities = InsertMentions([]string{"", " влюблен(а) 😍😍😍😍😍😍😍 в ", ""}, pair.From.Mention, pair.To.Mention)
+			msg = fmt.Sprintf("%s влюблен(а) 😍😍😍😍😍😍😍 в %s", from, to)
 		case activator:
-			msg, entities = InsertMentions([]string{"", " влюблен(а) 😍😍😍😍 в ", ", но боиться признаться в этом 🙈"}, pair.From.Mention, pair.To.Mention)
+			msg = fmt.Sprintf("%s влюблен(а) 😍😍😍😍 в %s, но боиться признаться в этом 🙈", from, to)
 		case halfDual:
-			msg, entities = InsertMentions([]string{"", " немного влюблен(а) 😍😍😍 в ", ""}, pair.From.Mention, pair.To.Mention)
+			msg = fmt.Sprintf("%s немного влюблен(а) 😍😍😍 в %s", from, to)
 		}
+		_ = msg
 		mc := tgbotapi.NewMessage(update.Message.Chat.ID, msg)
-		mc.Entities = entities
+		mc.ParseMode = tgbotapi.ModeMarkdown
 		bot.Send(mc)
 	}
 }
@@ -217,7 +216,7 @@ func main() {
 
 		c := b.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
-			key := string(k)
+			key, _ := strconv.Atoi(string(k))
 			var val User
 
 			err = gob.NewDecoder(bytes.NewBuffer(v)).Decode(&val)
