@@ -133,6 +133,13 @@ func addUser(db *bolt.DB, update tgbotapi.Update) (string, error) {
 	return fmt.Sprintf("%s - %s", displayName, typ), nil
 }
 
+type Pair struct {
+	From Mentioner
+	To   Mentioner
+}
+
+var lastPair *Pair
+
 func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 	switch update.Message.Command() {
 	case "add":
@@ -145,11 +152,6 @@ func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		}
 		bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, msg))
 	case "joke":
-		type Pair struct {
-			From Mentioner
-			To   Mentioner
-		}
-
 		pairs := make([]Pair, 0, len(users)*len(users))
 		for _, u1 := range users {
 			for _, u2 := range users {
@@ -165,8 +167,11 @@ func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		}
 
 		pair := pairs[rand.Intn(len(pairs))]
+		lastPair = &pair
+
 		from := pair.From.Mention()
 		to := pair.To.Mention()
+
 		log.Printf("from: %q, to: %q", from, to)
 		var msg string
 		switch complience[pair.From.GetType()][pair.To.GetType()] {
@@ -177,11 +182,24 @@ func handleCommand(db *bolt.DB, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
 		case halfDual:
 			msg = fmt.Sprintf("%s немного влюблен(а) 😍😍😍 в %s", from, to)
 		}
-		_ = msg
+		mc := tgbotapi.NewMessage(update.Message.Chat.ID, msg)
+		mc.ParseMode = tgbotapi.ModeMarkdown
+		bot.Send(mc)
+	case "not_a_joke":
+		if lastPair == nil {
+			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, "There was no jokes"))
+			return
+		}
+
+		pair := *lastPair
+		from := pair.From.Mention()
+		to := pair.To.Mention()
+		msg := fmt.Sprintf("❤️❤️❤️ %s ❤️❤️❤️\n тебя приглашает на свидание %s 😱😱😱", from, to)
 		mc := tgbotapi.NewMessage(update.Message.Chat.ID, msg)
 		mc.ParseMode = tgbotapi.ModeMarkdown
 		bot.Send(mc)
 	}
+
 }
 
 func main() {
@@ -217,9 +235,16 @@ func main() {
 		c := b.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
 			key, _ := strconv.Atoi(string(k))
-			var val User
+			var val Mentioner
+			var val1 User
+			var val2 UserWithID
 
-			err = gob.NewDecoder(bytes.NewBuffer(v)).Decode(&val)
+			err = gob.NewDecoder(bytes.NewBuffer(v)).Decode(&val1)
+			val = val1
+			if err != nil {
+				err = gob.NewDecoder(bytes.NewBuffer(v)).Decode(&val2)
+				val = val2
+			}
 			if err != nil {
 				return fmt.Errorf("error decoding val %s, err: %v", v, err)
 			}
