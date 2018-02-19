@@ -75,7 +75,7 @@ func (u UserWithID) Mention() string {
 	return fmt.Sprintf("[%s](tg://user?id=%v)", u.DisplayName, u.ID)
 }
 
-type UserIDType = int
+type UserIDType = string
 
 var users = map[UserIDType]Mentioner{}
 
@@ -111,15 +111,18 @@ func addUser(db *bolt.DB, update tgbotapi.Update) (string, error) {
 	}
 
 	u := User{DisplayName: displayName, Type: typ}
+	var k string
 	if userID != 0 {
-		users[userID] = UserWithID{User: u, ID: userID}
+		k = strconv.Itoa(userID)
+		users[k] = UserWithID{User: u, ID: userID}
 	} else {
-		users[userID] = u
+		k = displayName
+		users[k] = u
 	}
 	err := db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("users"))
 		var buffer bytes.Buffer
-		err := gob.NewEncoder(&buffer).Encode(users[userID])
+		err := gob.NewEncoder(&buffer).Encode(users[k])
 		if err != nil {
 			return fmt.Errorf("error encoding user: %v", err)
 		}
@@ -234,7 +237,7 @@ func main() {
 
 		c := b.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
-			key, _ := strconv.Atoi(string(k))
+			key := string(k)
 			var val Mentioner
 			var val1 User
 			var val2 UserWithID
